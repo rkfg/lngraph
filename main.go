@@ -5,12 +5,17 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 
 	"gonum.org/v1/gonum/graph"
 	"gonum.org/v1/gonum/graph/simple"
 )
+
+var w = sync.WaitGroup{}
+var c = sync.WaitGroup{}
 
 type Node struct {
 	graph.Node `json:"node"`
@@ -73,18 +78,48 @@ type components struct {
 	Components [][]graph.Node `json:"components"`
 }
 
+func finder(g graph.Graph, c chan graph.Node, pubkey string, comps chan components) {
+	defer w.Done()
+	for n := range c {
+		if nn, ok := n.(Node); ok {
+			if nn.Pubkey != pubkey {
+				comps <- components{Point: n, Components: findComponents(g, n, pubkey, 3)}
+			}
+		}
+	}
+}
+
+func collector(result *[]components, comps chan components) {
+	defer c.Done()
+	for c := range comps {
+		if len(c.Components) > 0 {
+			fmt.Fprintf(os.Stderr, "Added %d components\n", len(c.Components))
+			*result = append(*result, c)
+		}
+	}
+}
+
 func main() {
 	g := loadGraph("graph.json")
 	points := findArticulationPoints(g)
 	result := []components{}
-	for i := range points {
-		fmt.Fprintf(os.Stderr, "Processing point %d/%d\n", i, len(points))
-		comps := findComponents(g, points[i], 3)
-		if len(comps) > 1 {
-			fmt.Fprintf(os.Stderr, "Added %d components\n", len(comps))
-			result = append(result, components{Point: points[i], Components: comps})
-		}
+	nodes := make(chan graph.Node)
+	comps := make(chan components)
+	for i := 0; i < runtime.NumCPU(); i++ {
+		w.Add(1)
+		go finder(g, nodes, "", comps)
 	}
+	c.Add(1)
+	go collector(&result, comps)
+	go func() {
+		for i := range points {
+			fmt.Fprintf(os.Stderr, "Processing point %d/%d\n", i, len(points))
+			nodes <- points[i]
+		}
+		close(nodes)
+	}()
+	w.Wait()
+	close(comps)
+	c.Wait()
 	json.NewEncoder(os.Stdout).Encode(result)
-	// log.Printf("Nodes: %d, Channels: %d, Capacity: %d, Connected comps: %d", g.Nodes().Len(), g.Edges().Len(), totalcap, len(comps))
 }

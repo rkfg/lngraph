@@ -15,7 +15,6 @@ import (
 )
 
 var w = sync.WaitGroup{}
-var c = sync.WaitGroup{}
 
 type Node struct {
 	graph.Node `json:"node"`
@@ -83,18 +82,8 @@ func finder(g graph.Graph, c chan graph.Node, pubkey string, comps chan componen
 	for n := range c {
 		if nn, ok := n.(Node); ok {
 			if nn.Pubkey != pubkey {
-				comps <- components{Point: n, Components: findComponents(g, n, pubkey, 3)}
+				comps <- components{Point: n, Components: findComponents(g, n, pubkey, 5)}
 			}
-		}
-	}
-}
-
-func collector(result *[]components, comps chan components) {
-	defer c.Done()
-	for c := range comps {
-		if len(c.Components) > 0 {
-			fmt.Fprintf(os.Stderr, "Added %d components\n", len(c.Components))
-			*result = append(*result, c)
 		}
 	}
 }
@@ -109,8 +98,6 @@ func main() {
 		w.Add(1)
 		go finder(g, nodes, "", comps)
 	}
-	c.Add(1)
-	go collector(&result, comps)
 	go func() {
 		for i := range points {
 			fmt.Fprintf(os.Stderr, "Processing point %d/%d\n", i, len(points))
@@ -118,8 +105,15 @@ func main() {
 		}
 		close(nodes)
 	}()
-	w.Wait()
-	close(comps)
-	c.Wait()
+	go func() {
+		w.Wait()
+		close(comps)
+	}()
+	for c := range comps {
+		if len(c.Components) > 0 {
+			fmt.Fprintf(os.Stderr, "Added %d components\n", len(c.Components))
+			result = append(result, c)
+		}
+	}
 	json.NewEncoder(os.Stdout).Encode(result)
 }
